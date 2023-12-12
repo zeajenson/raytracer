@@ -1,12 +1,15 @@
 #include <algorithm>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <format>
 #include <functional>
 #include <iostream>
 #include <ostream>
 #include <random>
+#include <thread>
 #include <vector>
+#include <GLFW/glfw3.h>
 
 enum { x, y, z };
 
@@ -525,7 +528,7 @@ constexpr auto generate_z_order_mapping(std::uint64_t width, std::uint64_t heigh
 }
 
 // TODO: figure out how to make this work with things that arent' multiples of 4
-template <typename T> constexpr auto map_image(std::vector<T> const &pixels, std::vector<uint32_t> const &map, std::uint32_t width, std::uint32_t height) noexcept {
+template <typename T> constexpr auto swizzle(std::vector<T> const &pixels, std::vector<uint32_t> const &map, std::uint32_t width, std::uint32_t height) noexcept {
     auto new_pixels = std::vector<T>(width * height);
     for (auto y = 0; y < height; ++y) {
         for (auto x = 0; x < width; ++x) {
@@ -551,10 +554,28 @@ template <typename T> constexpr auto unmap_image(std::vector<T> const &pixels, s
     return new_pixels;
 }
 
-inline auto ray_trace_stuff() {
-    // Image
+    struct Image{
+        std::vector<uint8_t> r;
+        std::vector<uint8_t> g;
+        std::vector<uint8_t> b;
+        uint64_t width,height;
+    };
+
+inline auto ray_trace_stuff(uint64_t width, uint64_t height) -> Image{
+
+    const auto image_size = width * height;
+
+    
+    auto image = Image{
+        .r = std::vector<uint8_t>(image_size),
+        .g = std::vector<uint8_t>(image_size),
+        .b = std::vector<uint8_t>(image_size),
+        .width = width,
+        .height = height
+    };
+
     const auto aspect_ratio = 1;
-    const auto image_width = 512;
+    const auto image_width = 512*2;
     auto image_height = static_cast<int>(image_width / aspect_ratio);
     if (image_height < 1)
         image_height = 1;
@@ -617,7 +638,6 @@ inline auto ray_trace_stuff() {
     // std::vector<RGB> samples_per_pixel(pixels.size() * samples, {1, 1,
     // 1});
     std::vector<RGB> pixel_samples(pixels.size(), {0, 0, 0});
-    auto image_size = image_width * image_height;
     auto pixel_centers = std::vector<vec3>(image_size);
     for (auto y = 0; y < image_height; ++y) {
         for (auto x = 0; x < image_width; ++x) {
@@ -625,7 +645,7 @@ inline auto ray_trace_stuff() {
         }
     }
 
-    pixel_centers = map_image(pixel_centers, z_swizz, image_width, image_height);
+    pixel_centers = swizzle(pixel_centers, z_swizz, image_width, image_height);
     const auto ray_origin = (defocus_angle <= 0) ? camera_center : defocus_disk_sample(camera_center, defucus_disk_u, defucus_disk_v);
 
     // auto threads = std::vector<std::thread>(std::thread::hardware_concurrency());
@@ -709,15 +729,36 @@ inline auto ray_trace_stuff() {
     std::clog << "Writing...\n";
     std::puts(std::format("P3\n{} {}\n255\n", image_width, image_height).c_str());
     for (auto y = 0; y < image_height; ++y) {
-        std::clog << "\rScanlines remaining: " << (image_height - y) << ' ' << std::flush;
+        // std::clog << "\rScanlines remaining: " << (image_height - y) << ' ' << std::flush;
         for (auto x = 0; x < image_width; ++x) {
             write_rgba(new_pixels[x + (y * image_width)]);
         }
     }
+    return image;
 }
 
 // 🐈
-int main() {
+int main() noexcept{
+    if(not glfwInit()){
+        std::puts("Could not initialize GLFW");
+        std::terminate();
+    }
+    
+    const auto width = 512, height = 512;
+    const auto window = glfwCreateWindow(width,height,"raytracer",nullptr, nullptr);
+    if(not window){
+        std::puts("Could get GLFW window");
+        std::terminate();
+    }
+
+
     // auto  bla = generate_z_order_mapping(400,200);
-    ray_trace_stuff();
+    auto pixels = ray_trace_stuff(width, height);
+
+
+
+    while (not glfwWindowShouldClose(window)){
+        glfwPollEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
