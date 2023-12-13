@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cmath>
-#include <csignal>
 #include <cstdint>
 #include <format>
 #include <functional>
@@ -9,7 +8,9 @@
 #include <random>
 #include <thread>
 #include <vector>
-#include <GLFW/glfw3.h>
+#define GLFW_INCLUDE_VULKAN
+#include<GLFW/glfw3.h>
+
 
 enum { x, y, z };
 
@@ -737,7 +738,24 @@ inline auto ray_trace_stuff(uint64_t width, uint64_t height) -> Image{
     return image;
 }
 
+static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    void* pUserData) {
+
+    std::puts(std::format("validation layer :{} \n", pCallbackData->pMessage).c_str());
+
+    return VK_FALSE;
+}
+
+template<typename T>
+T load_vulkan_function(VkInstance instance, const char * name){
+    return reinterpret_cast<T>(glfwGetInstanceProcAddress(instance, name));
+}
+
 // 🐈
+//
 int main() noexcept{
     if(not glfwInit()){
         std::puts("Could not initialize GLFW");
@@ -745,16 +763,79 @@ int main() noexcept{
     }
     
     const auto width = 512, height = 512;
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     const auto window = glfwCreateWindow(width,height,"raytracer",nullptr, nullptr);
     if(not window){
         std::puts("Could get GLFW window");
         std::terminate();
     }
 
+    // auto pixels = ray_trace_stuff(width, height);
 
-    // auto  bla = generate_z_order_mapping(400,200);
-    auto pixels = ray_trace_stuff(width, height);
+    if(glfwVulkanSupported() == GLFW_API_UNAVAILABLE){
+        std::puts("Vulkan is not supported.\n");
+    }
 
+    {
+
+        auto allocator = nullptr; 
+
+        auto app_info = VkApplicationInfo{
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pNext = nullptr,
+            .pApplicationName = "raytracer",
+            .applicationVersion = VK_MAKE_VERSION(1,0,0),
+            .pEngineName = "No Engine",
+            .engineVersion = VK_MAKE_VERSION(1,0,0),
+            .apiVersion = VK_API_VERSION_1_3,
+        };
+
+        std::vector<char const*> extension_names = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME}; 
+        std::vector<char const*> layer_names = {"VK_LAYER_KHRONOS_validation"}; 
+        auto instantce_info = VkInstanceCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = {},
+            .pApplicationInfo = &app_info,
+            .enabledLayerCount = static_cast<uint32_t>(layer_names.size()),
+            .ppEnabledLayerNames = layer_names.data(),
+            .enabledExtensionCount = static_cast<uint32_t>(extension_names.size()),
+            .ppEnabledExtensionNames = extension_names.data(),
+        };
+
+
+        VkInstance instance;
+        auto vk_create_instance = load_vulkan_function<PFN_vkCreateInstance>(nullptr, "vkCreateInstance");
+        if(vk_create_instance(&instantce_info, allocator, &instance) not_eq VK_SUCCESS){
+            std::puts("Unable to create vulkan instance.\n");
+        }
+        auto debug_messenger_info = VkDebugUtilsMessengerCreateInfoEXT {
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .pNext = nullptr,
+            .flags = {},
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+            .pfnUserCallback = debug_callback,
+        };
+
+        VkDebugUtilsMessengerEXT debug_utils_messenger;
+
+        auto vk_create_debug_utils_messenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(glfwGetInstanceProcAddress(instance, "vkCreateDebugUtilsMessengerEXT"));
+        if(not vk_create_debug_utils_messenger){
+            std::puts("unable to load debug utils messenger.\n");
+        }else if(vk_create_debug_utils_messenger(instance, &debug_messenger_info, allocator, &debug_utils_messenger) not_eq VK_SUCCESS){
+            std::puts("unable to create debug utils messenger.\n");
+        }
+
+        auto vk_destroy_instance = reinterpret_cast<PFN_vkDestroyInstance>(glfwGetInstanceProcAddress(instance, "vkDestroyInstance"));
+        vk_destroy_instance(instance, allocator);
+    }
 
 
     while (not glfwWindowShouldClose(window)){
