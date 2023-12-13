@@ -833,7 +833,7 @@ int main() noexcept{
             std::puts("unable to create debug utils messenger.\n");
         }
 
-        auto vk_destroy_instance = reinterpret_cast<PFN_vkDestroyInstance>(glfwGetInstanceProcAddress(instance, "vkDestroyInstance"));
+        auto vk_destroy_instance = load_vulkan_function<PFN_vkDestroyInstance>(instance, "vkDestroyInstance");
         vk_destroy_instance(instance, allocator);
     }
 
