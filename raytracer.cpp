@@ -752,7 +752,7 @@ int main() noexcept {
                 std::terminate();
         }
 
-        const auto width = 512, height = 512;
+        const auto width = 512 * 2, height = 512 * 2;
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
         const auto window = glfwCreateWindow(width, height, "raytracer", nullptr, nullptr);
@@ -993,9 +993,9 @@ int main() noexcept {
         auto swapchain_images = std::vector<VkImage>(image_count);
         get_swapchain_images(device, swapchain, &image_count, swapchain_images.data());
 
-        auto image_views = std::vector<VkImageView>();
+        auto swapchain_image_views = std::vector<VkImageView>(swapchain_images.size());
         auto const create_image_views = load_vulkan_function<PFN_vkCreateImageView>(instance, "vkCreateImageView");
-        for (auto const &image : swapchain_images) {
+        for (auto i = 0; i < swapchain_images.size(); ++i) {
                 auto const subresource_range = VkImageSubresourceRange{
                         .aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT,
                         .baseMipLevel = 0,
@@ -1003,9 +1003,17 @@ int main() noexcept {
                         .baseArrayLayer = 0,
                         .layerCount = 1,
                 };
-                auto const image_view_create_info = VkImageViewCreateInfo{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = nullptr, .flags = {}, .image = image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = surface_format.format, .components = {}, .subresourceRange = subresource_range};
-                VkImageView image_view;
-                if (create_image_views(device, &image_view_create_info, allocator, &image_view) not_eq VK_SUCCESS) {
+                auto const image_view_create_info = VkImageViewCreateInfo{
+                        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        .pNext = nullptr,
+                        .flags = {},
+                        .image = swapchain_images[i],
+                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                        .format = surface_format.format,
+                        .components = {},
+                        .subresourceRange = subresource_range,
+                };
+                if (create_image_views(device, &image_view_create_info, allocator, &swapchain_image_views[i]) not_eq VK_SUCCESS) {
                         std::puts("unable to create swapchain image views");
                         std::exit(52);
                 }
@@ -1043,6 +1051,7 @@ int main() noexcept {
                 }
         }
         if (not depth_format) {
+                std::puts("unable to find depth format");
                 exit(7894238);
         }
 
@@ -1080,7 +1089,10 @@ int main() noexcept {
                 .dependencyFlags = {},
         };
 
-        auto const attachemnts = std::array{color_attachment, depth_attachment};
+        auto const attachemnts = std::array{
+                color_attachment,
+                // depth_attachment
+        };
 
         auto const render_pass_create_info = VkRenderPassCreateInfo{
                 .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -1111,7 +1123,7 @@ int main() noexcept {
                 auto buffer = std::vector<char>(fileSize);
                 file.seekg(0);
                 file.read(buffer.data(), fileSize);
-                std::puts(std::format("loading shader {} with bytecount {}", path.string(), buffer.size() ).c_str());
+                std::puts(std::format("loading shader {} with bytecount {}", path.string(), buffer.size()).c_str());
                 auto const shader_module_create_info = VkShaderModuleCreateInfo{
                         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                         .pNext = nullptr,
@@ -1309,7 +1321,7 @@ int main() noexcept {
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 .descriptorCount = 2,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-                .pImmutableSamplers =nullptr,
+                .pImmutableSamplers = nullptr,
         };
 
         // auto const sampler_binding = VkDescriptorSetLayoutBinding{
@@ -1331,14 +1343,14 @@ int main() noexcept {
                 .pBindings = descriptor_set_bindings.data(),
         };
 
-        VkDescriptorSetLayout descript_set_layout;
+        VkDescriptorSetLayout descriptor_set_layout;
         auto const create_descriptor_set_layout = load_vulkan_function<PFN_vkCreateDescriptorSetLayout>(instance, "vkCreateDescriptorSetLayout");
-        if (create_descriptor_set_layout(device, &descriptor_set_info, allocator, &descript_set_layout) not_eq VK_SUCCESS) {
+        if (create_descriptor_set_layout(device, &descriptor_set_info, allocator, &descriptor_set_layout) not_eq VK_SUCCESS) {
                 std::puts("unable to create descriptor set layout");
                 std::exit(1);
         }
 
-        auto const pipeline_layout_info = VkPipelineLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pNext = nullptr, .flags = {}, .setLayoutCount = 1, .pSetLayouts = &descript_set_layout};
+        auto const pipeline_layout_info = VkPipelineLayoutCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pNext = nullptr, .flags = {}, .setLayoutCount = 1, .pSetLayouts = &descriptor_set_layout};
 
         VkPipelineLayout pipeline_layout;
         auto const create_pipeline_layout = load_vulkan_function<PFN_vkCreatePipelineLayout>(instance, "vkCreatePipelineLayout");
@@ -1372,30 +1384,239 @@ int main() noexcept {
                 std::exit(89888);
         }
 
+        auto const vk_create_image = load_vulkan_function<PFN_vkCreateImage>(instance, "vkCreateImage");
+        auto const get_image_memory_requirements = load_vulkan_function<PFN_vkGetImageMemoryRequirements>(instance, "vkGetImageMemoryRequirements");
+        auto const vk_allocate_memory = load_vulkan_function<PFN_vkAllocateMemory>(instance, "vkAllocateMemory");
+        auto const bind_image_memory = load_vulkan_function<PFN_vkBindImageMemory>(instance, "vkBindImageMemory");
+        auto const create_image = [&](VkFormat format, uint32_t mip_levels, VkImageTiling tiling, VkImageUsageFlags usage) {
+                auto const image_info = VkImageCreateInfo{
+                        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                        .imageType = VK_IMAGE_TYPE_2D,
+                        .format = format,
+                        .extent = VkExtent3D{width, height, 1},
+                        .mipLevels = mip_levels,
+                        .arrayLayers = 1,
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = tiling,
+                        .usage = usage,
+                        .queueFamilyIndexCount = 0,
+                        .pQueueFamilyIndices = nullptr,
+                        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                };
+                VkImage image;
+                if (vk_create_image(device, &image_info, allocator, &image) not_eq VK_SUCCESS) {
+                        std::puts("unable to create vulkan image");
+                        std::exit(420);
+                }
+                VkMemoryRequirements image_memory_requirements;
+                get_image_memory_requirements(device, image, &image_memory_requirements);
+
+                VkMemoryAllocateInfo memory_allocate_info{
+                        .allocationSize = image_memory_requirements.size,
+                        // TODO: check memory type exists.
+                        .memoryTypeIndex = image_memory_requirements.memoryTypeBits,
+                };
+
+                VkDeviceMemory image_memory;
+                if (vk_allocate_memory(device, &memory_allocate_info, allocator, &image_memory) not_eq VK_SUCCESS) {
+                        std::puts("unable to allocate memory for an image");
+                        std::exit(420);
+                }
+
+                if (bind_image_memory(device, image, image_memory, 0) not_eq VK_SUCCESS) {
+                        std::exit(420);
+                }
+
+                struct {
+                        VkImage image;
+                        VkDeviceMemory memory;
+                } image_stuff{image, image_memory};
+                return image_stuff;
+        };
+
+        // auto [depth_image, depth_image_memory] = create_image(depth_format.value(), 1, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+        // auto const depth_subresource_range = VkImageSubresourceRange{
+        //         .aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_DEPTH_BIT,
+        //         .baseMipLevel = 0,
+        //         .levelCount = 1,
+        //         .baseArrayLayer = 0,
+        //         .layerCount = 1,
+        // };
+        // auto const depth_image_view_create_info = VkImageViewCreateInfo{
+        //         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        //         .pNext = nullptr,
+        //         .flags = {},
+        //         .image = depth_image,
+        //         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        //         .format = surface_format.format,
+        //         .components = {},
+        //         .subresourceRange = depth_subresource_range,
+        // };
+        // VkImageView depth_image_view;
+        // if (create_image_views(device, &depth_image_view_create_info, allocator, &depth_image_view) not_eq VK_SUCCESS) {
+        //         std::exit(520);
+        // }
+
+        auto const create_frame_buffer = load_vulkan_function<PFN_vkCreateFramebuffer>(instance, "vkCreateFramebuffer");
+        auto frame_buffers = std::vector<VkFramebuffer>(swapchain_image_views.size());
+        for (auto i = 0; i < swapchain_image_views.size(); ++i) {
+                auto const attachments = std::array{// depth_image_view,
+                                                    swapchain_image_views[i]};
+
+                auto const creat_info = VkFramebufferCreateInfo{
+                        .sType = VkStructureType::VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                        .flags = {},
+                        .renderPass = render_pass,
+                        .attachmentCount = attachments.size(),
+                        .pAttachments = attachments.data(),
+                        .width = image_extent.width,
+                        .height = image_extent.height,
+                        .layers = 1,
+                };
+                if (create_frame_buffer(device, &creat_info, allocator, &frame_buffers[i]) not_eq VK_SUCCESS) {
+                        exit(630);
+                }
+        }
+
+        auto const create_command_pool = load_vulkan_function<PFN_vkCreateCommandPool>(instance, "vkCreateCommandPool");
+        if (not create_command_pool) {
+                std::exit(30);
+        }
+
+        VkCommandPool command_pool;
+        auto const command_pool_create_info = VkCommandPoolCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .queueFamilyIndex = static_cast<uint32_t>(graphics_index),
+        };
+        if (create_command_pool(device, &command_pool_create_info, allocator, &command_pool) not_eq VK_SUCCESS) {
+                std::puts("unable to create command pool.");
+                std::exit(40202);
+        }
+        auto const command_buffer_allocate_info = VkCommandBufferAllocateInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = command_pool,
+                .level = VkCommandBufferLevel::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = static_cast<uint32_t>(frame_buffers.size()),
+        };
+        auto const allocate_command_buffers = load_vulkan_function<PFN_vkAllocateCommandBuffers>(instance, "vkAllocateCommandBuffers");
+        if (not allocate_command_buffers)
+                exit(1);
+        auto command_buffers = std::vector<VkCommandBuffer>(frame_buffers.size());
+        if (allocate_command_buffers(device, &command_buffer_allocate_info, command_buffers.data()) not_eq VK_SUCCESS) {
+                std::puts("unable to allocate command buffers");
+                std::exit(420);
+        }
+
+        auto const command_begin = load_vulkan_function<PFN_vkBeginCommandBuffer>(instance, "vkBeginCommandBuffer");
+        auto const command_end = load_vulkan_function<PFN_vkEndCommandBuffer>(instance, "vkEndCommandBuffer");
+        auto const command_begin_render_pass = load_vulkan_function<PFN_vkCmdBeginRenderPass>(instance, "vkEndCommandBuffer");
+        auto const command_end_render_pass = load_vulkan_function<PFN_vkCmdEndRenderPass>(instance, "vkCmdEndRenderPass");
+        auto const command_bind_descriptor_sets = load_vulkan_function<PFN_vkCmdBindDescriptorSets>(instance, "vkCmdBindDescriptorSets");
+
+        auto const clear_values = std::array{
+                VkClearValue{.color = VkClearColorValue{.float32 = {0, 0, 0, 0}}},
+                VkClearValue{.depthStencil = VkClearDepthStencilValue{.depth = 1, .stencil = 0}},
+        };
+
+        for (auto i = 0; i < command_buffers.size(); ++i) {
+                auto const &command_buffer = command_buffers[i];
+                auto const &frame_buffer = frame_buffers[i];
+                auto const command_buffer_begin_info = VkCommandBufferBeginInfo{
+                        .sType = VkStructureType::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                };
+
+                command_begin(command_buffer, &command_buffer_begin_info);
+
+                auto const render_pass_begin_info = VkRenderPassBeginInfo{
+                        .renderPass = render_pass,
+                        .framebuffer = frame_buffer,
+                        .renderArea = VkRect2D{.offset{0, 0}, .extent = image_extent},
+                        .clearValueCount = clear_values.size(),
+                        .pClearValues = clear_values.data(),
+                };
+                command_begin_render_pass(command_buffer, &render_pass_begin_info, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+                // TODO: bind vertex buffers
+                // TODO: bind index buffers
+
+                // VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet,
+                // uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t*
+                // pDynamicOffsets
+                // command_bind_descriptor_sets(command_buffer, VkPipelineBindPoint::VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, descriptor_set_bindings[i], 0, nullptr);
+                // command_end_render_pass(command_buffer);
+                command_end(command_buffer);
+        }
+        std::exit(229);
+
         auto max_frames_in_fleight = 2;
         auto current_frame = 0;
-        auto frame_image_available_semaphores = std::vector<VkSemaphore>(image_count);
-        auto frame_in_flieght_fences = std::vector<VkFence>(image_count);
+        auto image_available_semaphores = std::vector<VkSemaphore>(image_count);
+        auto render_finished_semaphores = std::vector<VkSemaphore>(image_count);
+        auto in_flieght_fences = std::vector<VkFence>(image_count);
+        auto const create_semaphore = load_vulkan_function<PFN_vkCreateSemaphore>(instance, "vkCreateSemaphore");
+        auto const create_fence = load_vulkan_function<PFN_vkCreateFence>(instance, "vkCreateFence");
+        for (auto i = 0; i < max_frames_in_fleight; ++i) {
+                auto empty_semaphore_create_info = VkSemaphoreCreateInfo{
+                        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                };
+                if (create_semaphore(device, &empty_semaphore_create_info, allocator, &image_available_semaphores[i]) not_eq VK_SUCCESS)
+                        std::exit(3939);
+                if (create_semaphore(device, &empty_semaphore_create_info, allocator, &render_finished_semaphores[i]) not_eq VK_SUCCESS)
+                        std::exit(3939);
+                auto fence_create_info = VkFenceCreateInfo{
+                        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                        .flags = VkFenceCreateFlagBits::VK_FENCE_CREATE_SIGNALED_BIT,
+                };
+                if (create_fence(device, &fence_create_info, allocator, &in_flieght_fences[i]) not_eq VK_SUCCESS)
+                        std::exit(765987);
+        }
 
         VkQueue present_queue;
         std::puts(std::format(" present index = {}", present_index).c_str());
         get_queue(device, present_index, 0, &present_queue);
 
         auto const acquire_next_image = load_vulkan_function<PFN_vkAcquireNextImageKHR>(instance, "vkAcquireNextImageKHR");
+        auto const queue_submit = load_vulkan_function<PFN_vkQueueSubmit>(instance, "vkQueueSubmit");
         auto const queue_present = load_vulkan_function<PFN_vkQueuePresentKHR>(instance, "vkQueuePresentKHR");
         auto const queue_wait_idle = load_vulkan_function<PFN_vkQueueWaitIdle>(instance, "vkQueueWaitIdle");
+        auto const wait_for_fences = load_vulkan_function<PFN_vkWaitForFences>(instance, "vkWaitForFences");
+        auto const reset_fences = load_vulkan_function<PFN_vkResetFences>(instance, "vkResetFences");
 
         while (not glfwWindowShouldClose(window)) {
                 glfwPollEvents();
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-                auto &image_available_semaphore = frame_image_available_semaphores[current_frame];
-                auto &in_fleight_fence = frame_in_flieght_fences[current_frame];
+                std::clog <<"waiting for fence " << current_frame << std::endl;
+                if (wait_for_fences(device, 1, &in_flieght_fences[current_frame], VK_TRUE, UINT64_MAX) not_eq VK_SUCCESS) {
+                        std::puts("unable to wait for frame fence");
+                }
+                if (reset_fences(device, 1, &in_flieght_fences[current_frame]) not_eq VK_SUCCESS) {
+                        std::puts("unable to reset fence");
+                }
+
+
+                // wait_for_fences(device, 1, &in_flieght_fence, VK_TRUE, UINT64_MAX);
+
+                // TODO update uniform buffer.
 
                 uint32_t swapchain_image_index;
-                if (acquire_next_image(device, swapchain, UINT64_MAX, image_available_semaphore, in_fleight_fence, &swapchain_image_index) not_eq VK_SUCCESS) {
-                        puts("unable to aquire swapchian image index.");
+                if (acquire_next_image(device, swapchain, UINT64_MAX, image_available_semaphores[current_frame], in_flieght_fences[current_frame], &swapchain_image_index) not_eq VK_SUCCESS) {
+                        std::puts("unable to aquire next swapchian image index.");
                 }
+
+                VkPipelineStageFlags wait_dst_stage_mask = VkPipelineStageFlagBits::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                auto const submit_info = VkSubmitInfo{
+                        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .waitSemaphoreCount = 1,
+                        .pWaitSemaphores = &image_available_semaphores[current_frame],
+                        .pWaitDstStageMask = &wait_dst_stage_mask,
+                        .commandBufferCount = 1,
+                        .pCommandBuffers = &command_buffers[current_frame],
+                        .signalSemaphoreCount = 1,
+                        .pSignalSemaphores = &render_finished_semaphores[current_frame],
+                };
+
+                queue_submit(graphics_queue, 1, &submit_info, in_flieght_fences[current_frame]);
 
                 auto const present_info = VkPresentInfoKHR{
                         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1406,7 +1627,6 @@ int main() noexcept {
                         .pSwapchains = &swapchain,
                         .pImageIndices = &swapchain_image_index,
                 };
-
                 if (queue_present(present_queue, &present_info) not_eq VK_SUCCESS) {
                         std::puts("unable to present");
                 }
@@ -1418,6 +1638,6 @@ int main() noexcept {
                 current_frame = (current_frame + 1) % max_frames_in_fleight;
         }
 
-        auto vk_destroy_instance = load_vulkan_function<PFN_vkDestroyInstance>(instance, "vkDestroyInstance");
-        vk_destroy_instance(instance, allocator);
+        // auto vk_destroy_instance = load_vulkan_function<PFN_vkDestroyInstance>(instance, "vkDestroyInstance");
+        // vk_destroy_instance(instance, allocator);
 }
