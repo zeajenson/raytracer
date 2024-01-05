@@ -843,7 +843,7 @@ int main() noexcept {
 
         auto physical_device = physical_devices[0];
 
-        auto const [graphics_index, present_index] = std::invoke([&] {
+        auto const [graphics_index, present_index, compute_index] = std::invoke([&] {
                 auto const get_physical_device_queue_family_properties = load_vulkan_function<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
                 uint32_t property_count = 0;
                 get_physical_device_queue_family_properties(physical_device, &property_count, nullptr);
@@ -853,13 +853,17 @@ int main() noexcept {
                 struct {
                         int32_t graphics_index;
                         int32_t present_index;
-                } indices{-1, -1};
+                        int32_t compute_index;
+                } indices{-1, -1, -1};
 
                 auto const get_physical_device_surface_support = load_vulkan_function<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
                 for (auto i = 0; i < property_count; ++i) {
                         auto const &property = properties[i];
                         if (indices.graphics_index < 0 and property.queueFlags & VkQueueFlagBits::VK_QUEUE_GRAPHICS_BIT) {
                                 indices.graphics_index = i;
+                        }
+                        if(indices.compute_index < 0 and property.queueFlags & VK_QUEUE_COMPUTE_BIT){
+                                indices.compute_index = i;
                         }
                         VkBool32 surface_is_supported = VK_FALSE;
                         if (get_physical_device_surface_support(physical_device, i, surface, &surface_is_supported) not_eq VK_SUCCESS) {
@@ -869,7 +873,8 @@ int main() noexcept {
                         if (indices.present_index < 0 and surface_is_supported) {
                                 indices.present_index = i;
                         }
-                        if (indices.graphics_index >= 0 and indices.present_index >= 0) {
+
+                        if (indices.graphics_index >= 0 and indices.present_index >= 0 and indices.compute_index >= 0) {
                                 break;
                         }
                 }
@@ -954,6 +959,7 @@ int main() noexcept {
         auto sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
         auto queue_family_indices = std::vector<uint32_t>();
         queue_family_indices.push_back(graphics_index);
+        queue_family_indices.push_back(compute_index);
         if (graphics_index not_eq present_index) {
                 queue_family_indices.push_back(present_index);
                 sharing_mode = VK_SHARING_MODE_CONCURRENT;
@@ -1144,9 +1150,8 @@ int main() noexcept {
                 return module;
         };
 
-        auto const vertex_shader_module = create_shader_module("shader.vert.spv");
-        auto const fragment_shader_module = create_shader_module("shader.frag.spv");
 
+        auto const vertex_shader_module = create_shader_module("shader.vert.spv");
         auto const vertex_shader_stage_create_info = VkPipelineShaderStageCreateInfo{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .pNext = nullptr,
@@ -1156,11 +1161,22 @@ int main() noexcept {
                 .pName = "main",
         };
 
+        auto const fragment_shader_module = create_shader_module("shader.frag.spv");
         auto const fragment_shader_stage_create_info = VkPipelineShaderStageCreateInfo{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = {},
                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .module = fragment_shader_module,
+                .pName = "main",
+        };
+
+        auto const computer_shader_module = create_shader_module("shader.comp.spv");
+        auto const compute_shader_stage_create_info = VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = {},
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                 .module = fragment_shader_module,
                 .pName = "main",
         };
@@ -1594,9 +1610,9 @@ int main() noexcept {
 
         auto vertices = std::vector<vertex_position>{
                 vertex_position{1, 1, 0},
-                vertex_position{0, 1, 0},
-                vertex_position{1, 0, 0},
-                vertex_position{0, 0, 0},
+                vertex_position{-1, 1, 0},
+                vertex_position{1, -1, 0},
+                vertex_position{-1, -1, 0},
         };
         auto vertex_buffer_size = VkDeviceSize{vertices.size() * sizeof(vertex_position)};
 
@@ -1612,7 +1628,9 @@ int main() noexcept {
         create_buffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertex_buffer_size, &device_vertex_buffer, &device_vertex_memory);
         buffer_copy(host_vertex_buffer, device_vertex_buffer, vertex_buffer_size);
 
-        auto indices = std::vector<uint32_t>{0, 1, 2, 2, 3, 0};
+        auto indices = std::vector<uint32_t>{
+                2, 3, 0, 0, 1, 2,
+        };
 
         auto index_buffer_size = VkDeviceSize{indices.size() * sizeof(uint32_t)};
 
@@ -1650,6 +1668,7 @@ int main() noexcept {
                 .offset = {0, 0},
                 .extent = image_extent,
         };
+
         auto const command_begin_render_pass = load_vulkan_function<PFN_vkCmdBeginRenderPass>(instance, "vkCmdBeginRenderPass");
         auto const command_end_render_pass = load_vulkan_function<PFN_vkCmdEndRenderPass>(instance, "vkCmdEndRenderPass");
         auto const command_set_scissor = load_vulkan_function<PFN_vkCmdSetScissor>(instance, "vkCmdSetScissor");
@@ -1691,7 +1710,6 @@ int main() noexcept {
                 // TODO: bind descriptor sets
                 // command_bind_descriptor_sets(command_buffer, VkPipelineBindPoint::VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, descriptor_set_bindings[i], 0, nullptr);
                 // command_draw(command_buffer, vertices.size(), 1, 0, 0);
-                vkCmdDrawIndexed;
                 command_draw_indexed(command_buffer, indices.size(), 1, 0, 0, 0);
                 command_end_render_pass(command_buffer);
                 command_end(command_buffer);
@@ -1735,14 +1753,13 @@ int main() noexcept {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
                 std::clog << "waiting for fence " << current_frame << std::endl;
+                device_wait_idle(device);
                 if (wait_for_fences(device, 1, &in_flieght_fences[current_frame], VK_TRUE, UINT64_MAX) not_eq VK_SUCCESS) {
                         std::puts("unable to wait for frame fence");
                 }
                 if (reset_fences(device, 1, &in_flieght_fences[current_frame]) not_eq VK_SUCCESS) {
                         std::puts("unable to reset fence");
                 }
-
-                // wait_for_fences(device, 1, &in_flieght_fence, VK_TRUE, UINT64_MAX);
 
                 // TODO update uniform buffer.
 
@@ -1758,7 +1775,7 @@ int main() noexcept {
                         .pWaitSemaphores = &image_available_semaphores[current_frame],
                         .pWaitDstStageMask = &wait_dst_stage_mask,
                         .commandBufferCount = 1,
-                        .pCommandBuffers = &command_buffers[current_frame],
+                        .pCommandBuffers = &command_buffers[swapchain_image_index],
                         .signalSemaphoreCount = 1,
                         .pSignalSemaphores = &render_finished_semaphores[current_frame],
                 };
