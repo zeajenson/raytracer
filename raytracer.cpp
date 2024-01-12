@@ -565,7 +565,7 @@ struct Image {
         uint64_t width, height;
 };
 
-inline auto ray_trace_stuff(uint64_t width, uint64_t height) -> Image {
+inline auto ray_trace_stuff(uint64_t width, uint64_t height, Ecs world) -> Image {
 
         const auto image_size = width * height;
 
@@ -652,8 +652,6 @@ inline auto ray_trace_stuff(uint64_t width, uint64_t height) -> Image {
         // }
 
         const auto hits = std::vector<Hit_Record>();
-
-        const auto world = settup_world();
 
         for (auto index = 0; index < image_height * image_width; ++index) {
 
@@ -762,7 +760,9 @@ int main() noexcept {
                 std::terminate();
         }
 
-        // auto pixels = ray_trace_stuff(width, height);
+        const auto world = settup_world();
+
+        // auto pixels = ray_trace_stuff(width, height, world);
 
         if (glfwVulkanSupported() == GLFW_API_UNAVAILABLE) {
                 std::puts("Vulkan is not supported.\n");
@@ -862,7 +862,7 @@ int main() noexcept {
                         if (indices.graphics_index < 0 and property.queueFlags & VkQueueFlagBits::VK_QUEUE_GRAPHICS_BIT) {
                                 indices.graphics_index = i;
                         }
-                        if(indices.compute_index < 0 and property.queueFlags & VK_QUEUE_COMPUTE_BIT){
+                        if (indices.compute_index < 0 and property.queueFlags & VK_QUEUE_COMPUTE_BIT) {
                                 indices.compute_index = i;
                         }
                         VkBool32 surface_is_supported = VK_FALSE;
@@ -1149,7 +1149,6 @@ int main() noexcept {
                 }
                 return module;
         };
-
 
         auto const vertex_shader_module = create_shader_module("shader.vert.spv");
         auto const vertex_shader_stage_create_info = VkPipelineShaderStageCreateInfo{
@@ -1608,43 +1607,103 @@ int main() noexcept {
                 device_wait_idle(device);
         };
 
+        auto const stage_and_copy_buffer = [create_buffer, buffer_copy, map_memory, unmap_memory, device]<typename T>(std::vector<T> data, VkBufferUsageFlags usage) {
+                auto const buffer_size = data.size() * sizeof(T);
+                VkDeviceMemory staging_memory;
+                VkBuffer staging_buffer;
+                create_buffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | usage, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, buffer_size, &staging_buffer, &staging_memory);
+
+                void *buffer_data_staging_memory;
+                map_memory(device, staging_memory, 0, buffer_size, 0, &buffer_data_staging_memory);
+                std::memcpy(buffer_data_staging_memory, data.data(), buffer_size);
+                unmap_memory(device, staging_memory);
+
+                VkDeviceMemory buffer_memory;
+                VkBuffer buffer;
+                create_buffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer_size, &buffer, &buffer_memory);
+                buffer_copy(staging_buffer, buffer, buffer_size);
+
+                struct {
+                        VkDeviceMemory memory;
+                        VkBuffer buffer;
+                } buffer_handle_and_memory{buffer_memory, buffer};
+                return buffer_handle_and_memory;
+        };
+
         auto vertices = std::vector<vertex_position>{
-                vertex_position{1, 1, 0},
-                vertex_position{-1, 1, 0},
-                vertex_position{1, -1, 0},
-                vertex_position{-1, -1, 0},
+                vertex_position{.5, .5, 0},
+                vertex_position{-.5, .5, 0},
+                vertex_position{.5, -.5, 0},
+                vertex_position{-.5, -.5, 0},
         };
-        auto vertex_buffer_size = VkDeviceSize{vertices.size() * sizeof(vertex_position)};
+        auto const [vertex_memory, vertex_buffer] = stage_and_copy_buffer(vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-        VkDeviceMemory host_vertex_memory;
-        VkBuffer host_vertex_buffer;
-        create_buffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, vertex_buffer_size, &host_vertex_buffer, &host_vertex_memory);
-        void *pvertex_buffer_memory;
-        map_memory(device, host_vertex_memory, 0, vertex_buffer_size, 0, &pvertex_buffer_memory);
-        std::memcpy(pvertex_buffer_memory, vertices.data(), vertex_buffer_size);
-        unmap_memory(device, host_vertex_memory);
-        VkDeviceMemory device_vertex_memory;
-        VkBuffer device_vertex_buffer;
-        create_buffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertex_buffer_size, &device_vertex_buffer, &device_vertex_memory);
-        buffer_copy(host_vertex_buffer, device_vertex_buffer, vertex_buffer_size);
+        auto indices = std::vector<uint32_t>{2, 1, 3, 0, 1, 2};
+        auto const [index_memory, index_buffer] = stage_and_copy_buffer(indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-        auto indices = std::vector<uint32_t>{
-                2, 3, 0, 0, 1, 2,
+        // Raytracer Image and Buffers
+        auto const raytracer_image_create_info = VkImageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VkImageType::VK_IMAGE_TYPE_2D,
+                .tiling = VkImageTiling::VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                .sharingMode = VkSharingMode::VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VkImageLayout::VK_IMAGE_LAYOUT_GENERAL,
+        };
+        // TODO: allocate image memory.
+
+        auto const [spheres_memory, spheres_buffer] = stage_and_copy_buffer(world.spheres, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+        auto const compute_descriptor_set_layout_binding = [](uint32_t binding) -> VkDescriptorSetLayoutBinding {
+                return {
+                        .binding = binding,
+                        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                        .descriptorCount = 1,
+                        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                        .pImmutableSamplers = nullptr,
+                };
+        };
+        auto const compute_layout_bindings = std::array{
+                compute_descriptor_set_layout_binding(0),
+                //TODO: materials and other raytracer shapes.
+                // compute_descriptor_set_layout_binding(1)
         };
 
-        auto index_buffer_size = VkDeviceSize{indices.size() * sizeof(uint32_t)};
+        auto const compute_descriptor_set_layout_create_info = VkDescriptorSetLayoutCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .flags ={},
+                .bindingCount = compute_layout_bindings.size(),
+                .pBindings = compute_layout_bindings.data(),
+        };
 
-        VkDeviceMemory host_index_memory;
-        VkBuffer host_index_buffer;
-        create_buffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, index_buffer_size, &host_index_buffer, &host_index_memory);
-        void *pindex_buffer_memory;
-        map_memory(device, host_index_memory, 0, index_buffer_size, 0, &pindex_buffer_memory);
-        std::memcpy(pindex_buffer_memory, indices.data(), index_buffer_size);
-        unmap_memory(device, host_index_memory);
-        VkDeviceMemory device_index_memory;
-        VkBuffer device_index_buffer;
-        create_buffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, index_buffer_size, &device_index_buffer, &device_index_memory);
-        buffer_copy(host_index_buffer, device_index_buffer, index_buffer_size);
+        VkDescriptorSetLayout compute_descriptor_set_layout;
+        create_descriptor_set_layout(device, &compute_descriptor_set_layout_create_info, allocator, &compute_descriptor_set_layout);
+
+        auto const compute_shader_stage = VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = computer_shader_module,
+                .pName = "main"
+        };
+
+        auto const compute_layout_create_info = VkPipelineLayoutCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 1,
+                .pSetLayouts = &compute_descriptor_set_layout,
+        };
+
+        VkPipelineLayout compute_layout;
+        create_pipeline_layout(device, &compute_layout_create_info, allocator, &compute_layout);
+
+        auto const compute_pipeline_create_info = VkComputePipelineCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .stage = compute_shader_stage,
+                .layout = compute_layout,
+        };
+        auto const vkCreateComputePipelines = load_vulkan_function<PFN_vkCreateComputePipelines>(instance, "vkCreateComputePipelines");
+
+        VkPipeline compute_pipeline;
+        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compute_pipeline_create_info, allocator, &compute_pipeline);
 
         // Command buffers.
         auto const command_buffer_allocate_info = VkCommandBufferAllocateInfo{
@@ -1668,7 +1727,6 @@ int main() noexcept {
                 .offset = {0, 0},
                 .extent = image_extent,
         };
-
         auto const command_begin_render_pass = load_vulkan_function<PFN_vkCmdBeginRenderPass>(instance, "vkCmdBeginRenderPass");
         auto const command_end_render_pass = load_vulkan_function<PFN_vkCmdEndRenderPass>(instance, "vkCmdEndRenderPass");
         auto const command_set_scissor = load_vulkan_function<PFN_vkCmdSetScissor>(instance, "vkCmdSetScissor");
@@ -1704,8 +1762,8 @@ int main() noexcept {
                 command_bind_pipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
                 VkDeviceSize offsets = 0;
-                command_bind_vertex_buffer(command_buffer, 0, 1, &device_vertex_buffer, &offsets);
-                command_bind_index_buffer(command_buffer, device_index_buffer, 0, VkIndexType::VK_INDEX_TYPE_UINT32);
+                command_bind_vertex_buffer(command_buffer, 0, 1, &vertex_buffer, &offsets);
+                command_bind_index_buffer(command_buffer, index_buffer, 0, VkIndexType::VK_INDEX_TYPE_UINT32);
 
                 // TODO: bind descriptor sets
                 // command_bind_descriptor_sets(command_buffer, VkPipelineBindPoint::VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, descriptor_set_bindings[i], 0, nullptr);
@@ -1750,7 +1808,6 @@ int main() noexcept {
 
         while (not glfwWindowShouldClose(window)) {
                 glfwPollEvents();
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
                 std::clog << "waiting for fence " << current_frame << std::endl;
                 device_wait_idle(device);
@@ -1787,6 +1844,7 @@ int main() noexcept {
                         .pNext = nullptr,
                         .waitSemaphoreCount = 0,
                         .pWaitSemaphores = nullptr,
+
                         .swapchainCount = 1,
                         .pSwapchains = &swapchain,
                         .pImageIndices = &swapchain_image_index,
@@ -1800,6 +1858,7 @@ int main() noexcept {
                 }
 
                 current_frame = (current_frame + 1) % max_frames_in_fleight;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 while (std::getchar() not_eq '\n')
                         ;
         }

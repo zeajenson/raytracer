@@ -10,12 +10,15 @@ add_subdirectory("glfw")
 
 set(VERT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shader.vert")
 set(FRAG_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shader.frag")
+set(COMP_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shader.comp")
+
 set(VERT_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.vert.spv")
 set(FRAG_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.frag.spv")
+set(COMP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.comp.spv")
 add_custom_command( 
 	OUTPUT ${VERT_OUTPUT} ${FRAG_OUTPUT}
 	# COMMAND glslc -fshader-stage=vert -o ${VERT_OUTPUT} ${VERT_SOURCE}\; glslc -fshader-stage=frag -o ${FRAG_OUTPUT} ${FRAG_SOURCE}
-	COMMAND glslc -o ${VERT_OUTPUT} ${VERT_SOURCE}\; glslc -o ${FRAG_OUTPUT} ${FRAG_SOURCE}
+	COMMAND glslc -o ${VERT_OUTPUT} ${VERT_SOURCE}\; glslc -o ${FRAG_OUTPUT} ${FRAG_SOURCE}\; glslc -o ${COMP_OUTPUT} ${COMP_SOURCE}
 	DEPENDS ${VERT_SOURCE} ${FRAG_SOURCE}
 )
 add_custom_target(shader_target DEPENDS ${VERT_OUTPUT} ${FRAG_OUTPUT})
