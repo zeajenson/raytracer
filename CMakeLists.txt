@@ -16,10 +16,10 @@ set(VERT_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.vert.spv")
 set(FRAG_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.frag.spv")
 set(COMP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.comp.spv")
 add_custom_command( 
-	OUTPUT ${VERT_OUTPUT} ${FRAG_OUTPUT}
+	OUTPUT ${VERT_OUTPUT} ${FRAG_OUTPUT} ${COMP_OUTPUT}
 	# COMMAND glslc -fshader-stage=vert -o ${VERT_OUTPUT} ${VERT_SOURCE}\; glslc -fshader-stage=frag -o ${FRAG_OUTPUT} ${FRAG_SOURCE}
 	COMMAND glslc -o ${VERT_OUTPUT} ${VERT_SOURCE}\; glslc -o ${FRAG_OUTPUT} ${FRAG_SOURCE}\; glslc -o ${COMP_OUTPUT} ${COMP_SOURCE}
-	DEPENDS ${VERT_SOURCE} ${FRAG_SOURCE}
+	DEPENDS ${VERT_SOURCE} ${FRAG_SOURCE} ${COMP_SOURCE}
 )
 add_custom_target(shader_target DEPENDS ${VERT_OUTPUT} ${FRAG_OUTPUT})
 
